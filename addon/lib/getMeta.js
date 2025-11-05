@@ -1105,7 +1105,7 @@ async function buildTmdbMovieResponse(stremioId, movieData, language, config, us
   let overview = movieData.overview;
   overview = Utils.processOverviewTranslations(movieData.translations, language, overview);
   let finalTitle = Utils.processTitleTranslations(movieData.translations, language, title, 'movie');
-  const langCode = language.split('-')[0];
+
   if (movieData.original_language === langCode) {
       finalTitle = movieData.original_title;
   }
@@ -1527,7 +1527,7 @@ async function buildTmdbSeriesResponse(stremioId, seriesData, language, config, 
   overview = Utils.processOverviewTranslations(seriesData.translations, language, overview);
   let finalName = Utils.processTitleTranslations(seriesData.translations, language, name, 'series');
 
-  const langCode = language.split('-')[0];
+
   if (seriesData.original_language === langCode) {
       finalName = seriesData.original_name;
   }

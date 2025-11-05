@@ -283,6 +283,16 @@ async function tvInfo(params, config) {
   return makeTmdbRequest(`/tv/${id}`, getApiKey(config), queryParams, 'GET', null, config);
 }
 
+// new function for movie cast
+async function movieCredits(id, config) {
+  return makeTmdbRequest(`/movie/${id}/credits`, getApiKey(config), { language: 'en-US' }, 'GET', null, config);
+}
+
+// new function for tv series cast
+async function tvCredits(id, config) {
+  return makeTmdbRequest(`/tv/${id}/credits`, getApiKey(config), { language: 'en-US' }, 'GET', null, config);
+}
+
 async function movieExternalIds(id, config) {
   return makeTmdbRequest(`/movie/${id}/external_ids`, getApiKey(config), { id }, 'GET', null, config);
 }
@@ -759,6 +769,8 @@ module.exports = {
   makeTmdbRequest, 
   movieInfo,
   tvInfo,
+  movieCredits, 
+  tvCredits, 
   searchMovie,
   searchTv,
   searchPerson: async (params, config) => {

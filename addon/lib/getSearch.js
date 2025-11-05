@@ -507,6 +507,22 @@ async function performTmdbSearch(type, query, language, config, searchPersons = 
         // Assemble the final meta object
         const parsed = Utils.parseMedia(details, mediaType, [], config);
         if (!parsed) return null; // In case parsing fails
+      
+        // --- początek poprawki
+    
+        if (mediaType === 'movie') {
+            parsed.name = Utils.processTitleTranslations(details.translations, language, details.title, 'movie');
+            if (details.original_language === langCode) {
+                parsed.name = details.original_title;
+            }
+        } else if (mediaType === 'series') { 
+            parsed.name = Utils.processTitleTranslations(details.translations, language, details.name, 'series');
+            if (details.original_language === langCode) {
+                parsed.name = details.original_name;
+            }
+        }
+        // --- koniec
+      
         parsed.id = stremioId;
         parsed.poster = (config.apiKeys?.rpdb && isRPDBEnabled(config)) ? posterProxyUrl : validPosterUrl;
         parsed.imdbRating = imdbRating;

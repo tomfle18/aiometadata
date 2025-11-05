@@ -474,6 +474,29 @@ function collectGenresFromItems(items) {
 // --- Movie Worker ---
 async function getMovieMeta(stremioId, preferredProvider, language, config, userUUID, allIds) {
   logger.info(`[MovieMeta] Starting process for ${stremioId}. Preferred: ${preferredProvider}`);
+
+  // Dodajemy ten blok, aby uwzględnić preferencje użytkownika dla TMDB
+  if (preferredProvider === 'tmdb' && allIds?.tmdbId) {
+    try {
+      const langCode = language.split('-')[0];
+      const imageLanguages = Array.from(new Set([langCode, 'en', 'null'])).join(',');
+      const movieData = await moviedb.movieInfo({ 
+        id: allIds.tmdbId, 
+        language, 
+        append_to_response: "videos,external_ids,images,translations,watch/providers,release_dates", 
+        include_image_language: imageLanguages 
+      }, config);
+      
+      if (movieData) {
+        return await buildTmdbMovieResponse(stremioId, movieData, language, config, userUUID, { allIds });
+      } else {
+        logger.warn(`[MovieMeta] TMDB (Preferred) returned null data for ${allIds.tmdbId}`);
+      }
+    } catch (e) {
+      logger.warn(`[MovieMeta] Preferred provider 'tmdb' failed for ${stremioId}: ${e.message}`);
+    }
+  }
+  // --- KONIEC NOWEGO BLOKU ---
   
   // Try preferred provider first
   if (preferredProvider === 'tvdb' && allIds?.tvdbId) {
@@ -511,7 +534,7 @@ async function getMovieMeta(stremioId, preferredProvider, language, config, user
       const movieData = await moviedb.movieInfo({ 
         id: allIds.tmdbId, 
         language, 
-        append_to_response: "videos,credits,external_ids,images,translations,watch/providers,release_dates", 
+        append_to_response: "videos,external_ids,images,translations,watch/providers,release_dates", 
         include_image_language: imageLanguages,
         include_video_language: videoLanguages
       }, config);
@@ -568,7 +591,7 @@ async function getSeriesMeta(preferredProvider, stremioId, language, config, use
       const seriesData = await moviedb.tvInfo({ 
         id: allIds.tmdbId, 
         language, 
-        append_to_response: "videos,credits,external_ids,images,translations,watch/providers,content_ratings", 
+        append_to_response: "videos,external_ids,images,translations,watch/providers,content_ratings", 
         include_image_language: imageLanguages,
         include_video_language: videoLanguages
       }, config);
@@ -1002,7 +1025,7 @@ function processCreditsPhotos(credits) {
 
 async function buildTmdbMovieResponse(stremioId, movieData, language, config, userUUID, enrichmentData = {}, isAnime = false) {
   const { allIds } = enrichmentData;
-  const { id: tmdbId, title, external_ids, poster_path, backdrop_path, credits, images, } = movieData;
+  const { id: tmdbId, title, external_ids, poster_path, backdrop_path, images, } = movieData;
   const imdbId = allIds?.imdbId;
   const tvdbId = allIds?.tvdbId;
   const castCount = config.castCount === 0 ? undefined : config.castCount;
@@ -1021,20 +1044,34 @@ async function buildTmdbMovieResponse(stremioId, movieData, language, config, us
   let poster, background, logoUrl, imdbRatingValue;
   
   if (isAnime) {
-    const artwork = await getAnimeArtwork(allIds, config, tmdbPosterUrl, tmdbBackgroundUrl, 'movie');
+    const [artwork, creditsData] = await Promise.all([
+          getAnimeArtwork(allIds, config, tmdbPosterUrl, tmdbBackgroundUrl, 'movie'),
+          moviedb.movieCredits(tmdbId, config) //  credits EN
+      ]);
+      
     poster = artwork.poster;
     background = artwork.background;
     logoUrl = artwork.logo;
     imdbRatingValue = artwork.imdbRatingValue;
+    englishCredits = creditsData; 
   } else {
-    [poster, background, logoUrl, imdbRatingValue] = await Promise.all([
-      Utils.getMoviePoster({ tmdbId, tvdbId, imdbId, metaProvider: 'tmdb', fallbackPosterUrl: tmdbPosterUrl }, config, isAnime),
-      Utils.getMovieBackground({ tmdbId, tvdbId, imdbId, metaProvider: 'tmdb', fallbackBackgroundUrl: tmdbBackgroundUrl }, config, isAnime),
-      Utils.getMovieLogo({ tmdbId, tvdbId, imdbId, metaProvider: 'tmdb', fallbackLogoUrl: tmdbLogoUrl }, config, isAnime),
-      getImdbRating(imdbId, 'movie')
-  ]);
+      
+      let artResults;
+      [artResults, imdbRatingValue, englishCredits] = await Promise.all([
+          Promise.all([ 
+              Utils.getMoviePoster({ tmdbId, tvdbId, imdbId, metaProvider: 'tmdb', fallbackPosterUrl: tmdbPosterUrl }, config, isAnime),
+              Utils.getMovieBackground({ tmdbId, tvdbId, imdbId, metaProvider: 'tmdb', fallbackBackgroundUrl: tmdbBackgroundUrl }, config, isAnime),
+              Utils.getMovieLogo({ tmdbId, tvdbId, imdbId, metaProvider: 'tmdb', fallbackLogoUrl: tmdbLogoUrl }, config, isAnime),
+          ]),
+          getImdbRating(imdbId, 'movie'),
+          moviedb.movieCredits(tmdbId, config) //  credits EN
+      ]);
+      
+      [poster, background, logoUrl] = artResults;
   }
   
+
+  const credits = englishCredits;
   const imdbRating = imdbRatingValue || movieData.vote_average?.toFixed(1) || "N/A";
   const posterProxyUrl = `${host}/poster/movie/tmdb:${movieData.id}?fallback=${encodeURIComponent(poster)}&lang=${language}&key=${config.apiKeys?.rpdb}`;
   const kitsuId = allIds?.kitsuId;
@@ -1067,9 +1104,14 @@ async function buildTmdbMovieResponse(stremioId, movieData, language, config, us
   const watchProviders = moviedb.getWatchProviders(movieData['watch/providers'], config);
   let overview = movieData.overview;
   overview = Utils.processOverviewTranslations(movieData.translations, language, overview);
-  finalTitle = Utils.processTitleTranslations(movieData.translations, language, title, 'movie');
+  let finalTitle = Utils.processTitleTranslations(movieData.translations, language, title, 'movie');
+  const langCode = language.split('-')[0];
+  if (movieData.original_language === langCode) {
+      finalTitle = movieData.original_title;
+  }
+
   const certification = Utils.getTmdbMovieCertificationForCountry(movieData.release_dates);
-  let links = Utils.buildLinks(imdbRating, imdbId, title, 'movie', movieData.genres, credits, language, castCount, userUUID);
+  let links = Utils.buildLinks(imdbRating, imdbId, finalTitle, 'movie', movieData.genres, credits, language, castCount, userUUID);
   if (certification && config.displayAgeRating) {
     const certificationLink = {
       name: certification,
@@ -1120,7 +1162,7 @@ async function buildTmdbMovieResponse(stremioId, movieData, language, config, us
 
 
 async function buildTmdbSeriesResponse(stremioId, seriesData, language, config, userUUID, enrichmentData = {}, isAnime = false, includeVideos = true) {
-  const { id: tmdbId, name, external_ids, poster_path, backdrop_path, credits, videos: trailers, seasons, images } = seriesData;
+  const { id: tmdbId, name, external_ids, poster_path, backdrop_path, videos: trailers, seasons, images } = seriesData;
   const { allIds } = enrichmentData;
   const imdbId = allIds?.imdbId;
   const tvdbId = allIds?.tvdbId;
@@ -1141,22 +1183,36 @@ async function buildTmdbSeriesResponse(stremioId, seriesData, language, config, 
   const selectedLogo = Utils.selectTmdbImageByLang(images?.logos, config);
   let tmdbLogoUrl = selectedLogo?.file_path ? `https://image.tmdb.org/t/p/original${selectedLogo?.file_path}` : imdbId ? imdb.getLogoFromImdb(imdbId) : null;
   let poster, background, logoUrl, imdbRatingValue;
+  let englishCredits;
   
   const animeIdProviders = ['mal', 'anilist', 'kitsu', 'anidb'];
   // check if stremioId starts with one of the animeIdProviders
   if (isAnime && animeIdProviders.some(provider => stremioId.startsWith(provider))) {
-    const artwork = await getAnimeArtwork(allIds, config, tmdbPosterUrl, tmdbBackgroundUrl, 'series');
+    const [artwork, creditsData] = await Promise.all([
+          getAnimeArtwork(allIds, config, tmdbPosterUrl, tmdbBackgroundUrl, 'series'),
+          moviedb.tvCredits(tmdbId, config) //  credits EN
+      ]);
+      
     poster = artwork.poster;
     background = artwork.background;
     logoUrl = artwork.logo;
     imdbRatingValue = artwork.imdbRatingValue;
+    englishCredits = creditsData; 
   } else {
-    [poster, background, logoUrl] = await Promise.all([
-      Utils.getSeriesPoster({ tmdbId, tvdbId, imdbId, metaProvider: 'tmdb', fallbackPosterUrl: tmdbPosterUrl }, config, isAnime),
-      Utils.getSeriesBackground({ tmdbId, tvdbId, imdbId, metaProvider: 'tmdb', fallbackBackgroundUrl: tmdbBackgroundUrl }, config, isAnime),
-      Utils.getSeriesLogo({ tmdbId, tvdbId, imdbId, metaProvider: 'tmdb', fallbackLogoUrl: tmdbLogoUrl }, config, isAnime),
-  ]);
+      let artResults;
+      [artResults, englishCredits] = await Promise.all([
+          Promise.all([ 
+              Utils.getSeriesPoster({ tmdbId, tvdbId, imdbId, metaProvider: 'tmdb', fallbackPosterUrl: tmdbPosterUrl }, config, isAnime),
+              Utils.getSeriesBackground({ tmdbId, tvdbId, imdbId, metaProvider: 'tmdb', fallbackBackgroundUrl: tmdbBackgroundUrl }, config, isAnime),
+              Utils.getSeriesLogo({ tmdbId, tvdbId, imdbId, metaProvider: 'tmdb', fallbackLogoUrl: tmdbLogoUrl }, config, isAnime),
+          ]),
+          moviedb.tvCredits(tmdbId, config) //  credits EN
+      ]);
+      
+      [poster, background, logoUrl] = artResults;
   }
+  
+  const credits = englishCredits;
   // log arts 
   // logger.debug(`[TmdbSeriesMeta] poster: ${poster}, background: ${background}, logoUrl: ${logoUrl}`);
   
@@ -1469,9 +1525,12 @@ async function buildTmdbSeriesResponse(stremioId, seriesData, language, config, 
   const watchProviders = moviedb.getWatchProviders(seriesData['watch/providers'], config);
   let overview = seriesData.overview;
   overview = Utils.processOverviewTranslations(seriesData.translations, language, overview);
-  let finalName = seriesData.name;
-  finalName = Utils.processTitleTranslations(seriesData.translations, language, finalName, 'series');
+  let finalName = Utils.processTitleTranslations(seriesData.translations, language, name, 'series');
 
+  const langCode = language.split('-')[0];
+  if (seriesData.original_language === langCode) {
+      finalName = seriesData.original_name;
+  }
   // Build releaseInfo in format "first_year-last_year" or "first_year-" for ongoing series
   let releaseInfo = "";
   if (seriesData.first_air_date) {
